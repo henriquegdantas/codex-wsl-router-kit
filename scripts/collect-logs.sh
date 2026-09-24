@@ -14,7 +14,7 @@ if [ -n "$latest" ]; then
 fi
 {
   echo "== extension installs (WSL server)"; ls -1d "$HOME"/.vscode-server/extensions/openai.chatgpt-* 2>/dev/null
-  echo "== override"; ls -la "$HOME/.local/share/codex-override/" 2>/dev/null; "$HOME/.local/share/codex-override/current/codex" --version 2>&1
+  echo "== override"; ls -la "$CODEX_HOME/codex-override/" 2>/dev/null; for b in "$CODEX_HOME"/codex-override/*/bin/codex; do [ -x "$b" ] && echo "$b: $("$b" --version 2>&1)"; done
   echo "== server-env-setup"; cat "$VSCODE_SERVER_ENV" 2>/dev/null
   echo "== /etc/fstab"; cat /etc/fstab 2>/dev/null
   echo "== codex-ipc-bind"; systemctl status codex-ipc-bind.service --no-pager 2>&1 | head -8

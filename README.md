@@ -105,7 +105,7 @@ Each of these was hit and fixed while building this kit:
 | VS Code `settings.json` | `chatgpt.runCodexInWindowsSubsystemForLinux: true`, optionally `chatgpt.cliExecutable` (backup next to it) |
 | WSL `~/.local/state/codex-router` | router API keys and merged model catalog (0600 permissions) |
 | WSL `~/.local/state/codex-sqlite` | SQLite state for VS Code / WSL-shell Codex |
-| WSL `~/.local/share/codex-override` | optional newer official Codex package used by VS Code (`current/bin/codex`) |
+| `%USERPROFILE%\.codex\codex-override\<version>` | optional newer official Codex package used by VS Code (`chatgpt.cliExecutable` points to its `bin/codex`) |
 
 Notes:
 

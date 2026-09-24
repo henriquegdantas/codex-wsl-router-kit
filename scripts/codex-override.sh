@@ -8,13 +8,17 @@
 set -uo pipefail
 source "$(dirname "$(readlink -f "$0")")/env.sh"
 
-OVR_DIR="$HOME/.local/share/codex-override"
-# Official full package layout: bin/codex + bin/codex-code-mode-host (needed by GPT-6 "code mode"
-# models) + codex-resources/bwrap + codex-path/rg. A bare codex binary is NOT enough.
-OVR_BIN="$OVR_DIR/current/bin/codex"
-# Plain Linux path: works both in Remote-WSL windows (extension runs on Linux and spawns it
-# as-is) and in local windows with "Run Codex in WSL" (extension passes /-paths through).
-OVR_WIN_PATH="$OVR_BIN"
+# Installed next to the Codex home on the Windows drive (C:\Users\<you>\.codex\codex-override\<version>).
+# Works for both Remote-WSL windows and local windows with "Run Codex in WSL", survives WSL resets,
+# and is visible from Windows. Official full package layout: bin/codex + bin/codex-code-mode-host
+# (needed by GPT-6 "code mode" models) + codex-resources/bwrap + codex-path/rg.
+# A bare codex binary is NOT enough.
+OVR_DIR="$CODEX_HOME/codex-override"
+LEGACY_OVR_DIR="$HOME/.local/share/codex-override"   # used by earlier versions of this kit
+installed_bin() { # newest complete install
+  local d; d=$(ls -1d "$OVR_DIR"/[0-9]*/ 2>/dev/null | sort -V | tail -n1); d=${d%/}
+  [ -n "$d" ] && [ -x "$d/bin/codex" ] && [ -x "$d/bin/codex-code-mode-host" ] && echo "$d/bin/codex"
+}
 URL="${CODEX_PACKAGE_URL:-https://github.com/openai/codex/releases/latest/download/codex-package-x86_64-unknown-linux-musl.tar.gz}"
 
 ver() { [ -x "$1" ] && "$1" --version 2>/dev/null | awk '{print $NF}'; }
@@ -50,7 +54,8 @@ status() {
   local d v; d="${CODEX_BIN:-}"; v=$(vscode_codex_bin)
   [ -n "$d" ] && echo "   desktop bundled : $(ver "$d")  sandbox: $(sandbox_test "$d")"
   [ -n "$v" ] && echo "   vscode bundled  : $(ver "$v")  sandbox: $(sandbox_test "$v")"
-  [ -x "$OVR_BIN" ] && echo "   override (WSL)  : $(ver "$OVR_BIN")  sandbox: $(sandbox_test "$OVR_BIN")  tools: $(bash "$TOOLS_DIR/scripts/tooltest.sh" "$OVR_BIN" code)"
+  local o; o=$(installed_bin)
+  [ -n "$o" ] && echo "   override        : $(ver "$o")  sandbox: $(sandbox_test "$o")  GPT-6 tools: $(bash "$TOOLS_DIR/scripts/tooltest.sh" "$o" code)  ($o)"
   local cur; cur=$(settings_json_get)
   if [ -n "$cur" ]; then echo "   VS Code chatgpt.cliExecutable = $cur"; else echo "   VS Code uses its bundled Codex (no override)"; fi
   if [ -n "$cur" ] && [ -n "$v" ] && [ "$(sandbox_test "$v")" = ok ]; then
@@ -66,31 +71,36 @@ download() {
     c_err "unexpected package layout (bin/codex or bin/codex-code-mode-host missing)"; rm -rf "$tmp"; return 1
   fi
   local v; v=$(ver "$tmp/pkg/bin/codex")
-  rm -rf "${OVR_DIR:?}/$v"; mkdir -p "$OVR_DIR"; mv "$tmp/pkg" "$OVR_DIR/$v"; rm -rf "$tmp"
+  # test in a staging folder first, so a failed test never touches the working install
+  local stage="$OVR_DIR/.staging-$v"
+  rm -rf "$stage"; mkdir -p "$OVR_DIR"; mv "$tmp/pkg" "$stage"; rm -rf "$tmp"
   c_step "Test Codex $v before switching to it"
   local t1 t2 t3
-  t1=$(sandbox_test "$OVR_DIR/$v/bin/codex")
-  t2=$(bash "$TOOLS_DIR/scripts/tooltest.sh" "$OVR_DIR/$v/bin/codex" code)
-  t3=$(bash "$TOOLS_DIR/scripts/tooltest.sh" "$OVR_DIR/$v/bin/codex" direct)
+  t1=$(sandbox_test "$stage/bin/codex")
+  t2=$(bash "$TOOLS_DIR/scripts/tooltest.sh" "$stage/bin/codex" code)
+  t3=$(bash "$TOOLS_DIR/scripts/tooltest.sh" "$stage/bin/codex" direct)
   echo "   sandbox: $t1 | GPT-style (code mode) tool call: $t2 | DeepSeek-style tool call: $t3"
   if [ "$t1" != ok ] || [ "$t2" != ok ] || [ "$t3" != ok ]; then
-    c_err "Codex $v failed a test; keeping the previous version."; return 1
+    c_err "Codex $v failed a test; keeping the previous version (tested copy left in $stage)."; return 1
   fi
-  ln -sfn "$OVR_DIR/$v" "$OVR_DIR/current"
-  # remove older installs (including the old bare-binary layout)
-  for old in "$OVR_DIR"/*/; do old=${old%/}; [ "$old" = "$OVR_DIR/$v" ] || [ -L "$old" ] || rm -rf "$old"; done
-  c_ok "installed Codex $v at $OVR_BIN"
+  rm -rf "${OVR_DIR:?}/$v"; mv "$stage" "$OVR_DIR/$v"
+  # remove older versions, a leftover symlink, and the old WSL-home location of earlier kit versions
+  for old in "$OVR_DIR"/*; do [ "$old" = "$OVR_DIR/$v" ] || rm -rf "$old"; done
+  rm -rf "$LEGACY_OVR_DIR"
+  c_ok "installed Codex $v at $OVR_DIR/$v/bin/codex"
 }
 
 case "${1:-status}" in
   status) status ;;
   get) [ -f "$VSCODE_SETTINGS" ] && settings_json_get ;;
-  update) download && status ;;
+  update) download && { b=$(installed_bin); cur=$(settings_json_get); if [ -n "$cur" ] && [ "$cur" != "$b" ]; then settings_json_set "$b"; c_ok "VS Code switched to $b"; fi; status; } ;;
   vscode-on)
-    # (re)install if missing, or if it is the old bare-binary layout without codex-code-mode-host
-    { [ -x "$OVR_BIN" ] && [ -x "$(dirname "$OVR_BIN")/codex-code-mode-host" ]; } || download || exit 1
-    settings_json_set "$OVR_WIN_PATH"
-    [ "$(settings_json_get)" = "$OVR_WIN_PATH" ] && c_ok "VS Code now uses $(ver "$OVR_BIN") ($OVR_WIN_PATH)" || { c_err "couldn't update settings.json"; exit 1; }
+    # install if there is no complete package yet (bin/codex + bin/codex-code-mode-host)
+    b=$(installed_bin); [ -n "$b" ] || { download && b=$(installed_bin); } || exit 1
+    [ -n "$b" ] || { c_err "no usable Codex package in $OVR_DIR"; exit 1; }
+    # a plain Linux path works in Remote-WSL windows and in local windows with "Run Codex in WSL"
+    [ "$(settings_json_get)" = "$b" ] || settings_json_set "$b"
+    [ "$(settings_json_get)" = "$b" ] && c_ok "VS Code uses Codex $(ver "$b") ($b)" || { c_err "couldn't update settings.json"; exit 1; }
     echo "In VS Code: Ctrl+Shift+P -> 'Developer: Reload Window'. Undo any time: bash $0 vscode-off" ;;
   vscode-off)
     settings_json_set ""; [ -z "$(settings_json_get)" ] && c_ok "VS Code back to its bundled Codex. Reload the window." ;;
