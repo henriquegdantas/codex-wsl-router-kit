@@ -90,9 +90,13 @@ cli=$(bash "$TOOLS_DIR/scripts/codex-override.sh" get 2>/dev/null)
 if [ -n "$cli" ]; then
   if [[ "$cli" != /* ]]; then fail "chatgpt.cliExecutable is not a Linux path ($cli): Remote-WSL windows can't start it (extension loads forever)"; need_fix
     [ $FIX = 1 ] && bash "$TOOLS_DIR/scripts/codex-override.sh" vscode-on
-  elif [ -x "$cli" ]; then c_ok "chatgpt.cliExecutable -> $cli ($("$cli" --version 2>/dev/null | awk '{print $NF}'))"
-  else fail "chatgpt.cliExecutable points to a missing file: $cli"; need_fix
-    [ $FIX = 1 ] && bash "$TOOLS_DIR/scripts/codex-override.sh" update; fi
+  elif [ ! -x "$cli" ]; then fail "chatgpt.cliExecutable points to a missing file: $cli"; need_fix
+    [ $FIX = 1 ] && bash "$TOOLS_DIR/scripts/codex-override.sh" vscode-on
+  elif [ ! -x "$(dirname "$cli")/codex-code-mode-host" ]; then
+    fail "no codex-code-mode-host next to $cli: GPT-6 models can't run any tool ('code-mode host executable is missing')"; need_fix
+    [ $FIX = 1 ] && bash "$TOOLS_DIR/scripts/codex-override.sh" vscode-on
+  else c_ok "chatgpt.cliExecutable -> $cli ($("$cli" --version 2>/dev/null | awk '{print $NF}'), with codex-code-mode-host)"; fi
+  cli=$(bash "$TOOLS_DIR/scripts/codex-override.sh" get 2>/dev/null)   # may have been fixed above
 fi
 
 c_step "6b. Start Codex exactly like the VS Code extension does"
@@ -103,17 +107,26 @@ if [ -x "$eff_bin" ]; then
     || fail "app-server with the VS Code environment fails: $r"
 else c_warn "no VS Code Codex binary found to test"; fi
 
+c_step "6c. Run a tool call the way each model type does (local mock model, no API cost)"
+if [ -x "$eff_bin" ]; then
+  for m in code direct; do
+    label=$([ $m = code ] && echo "GPT-6 models (code mode)" || echo "DeepSeek/routed models")
+    r=$(bash "$TOOLS_DIR/scripts/tooltest.sh" "$eff_bin" $m)
+    if [ "$r" = ok ]; then c_ok "$label: shell command ran inside the sandbox"
+    else fail "$label: $r"; fi
+  done
+fi
+
 c_step "7. Sandbox self-test (desktop + VS Code Codex binaries)"
 tmpd=$(mktemp -d /tmp/codex-check.XXXXXX); chmod 755 "$tmpd"  # plain /tmp dir the sandbox helper can reach
 vs_override=$(bash "$TOOLS_DIR/scripts/codex-override.sh" get 2>/dev/null)
 vs_bin=$(vscode_codex_bin)
 if [ -n "$vs_override" ]; then
-  ovr_linux="$HOME/.local/share/codex-override/current/codex"
+  ovr_linux="$vs_override"
   if [ -x "$ovr_linux" ]; then c_ok "VS Code uses override Codex $("$ovr_linux" --version | awk '{print $NF}') (chatgpt.cliExecutable)"
-  else fail "VS Code chatgpt.cliExecutable points to a missing binary ($vs_override)"; need_fix
-       [ $FIX = 1 ] && bash "$TOOLS_DIR/scripts/codex-override.sh" update; fi
+  else fail "VS Code chatgpt.cliExecutable points to a missing binary ($vs_override)"; need_fix; fi
 fi
-for pair in "desktop:${CODEX_BIN:-}" "vscode-bundled:$vs_bin" ${vs_override:+"vscode-override:$HOME/.local/share/codex-override/current/codex"}; do
+for pair in "desktop:${CODEX_BIN:-}" "vscode-bundled:$vs_bin" ${vs_override:+"vscode-override:$vs_override"}; do
   name=${pair%%:*}; bin=${pair#*:}
   [ -n "$bin" ] && [ -x "$bin" ] || { c_warn "$name: codex binary not found"; continue; }
   ver=$("$bin" --version 2>/dev/null | awk '{print $NF}')

@@ -59,6 +59,7 @@ bash scripts/router.sh status | doctor | doctor --fix | providers | update
 bash scripts/router.sh provider-key <provider> set     # add another provider's API key
 bash scripts/router.sh test-model deepseek/deepseek-v4.1-flash
 bash scripts/codex-override.sh status | vscode-on | vscode-off | update
+bash scripts/tooltest.sh <path-to-codex> [code|direct]   # tool-call test with a local mock model
 ```
 
 ### What `check.sh` verifies
@@ -71,6 +72,9 @@ bash scripts/codex-override.sh status | vscode-on | vscode-off | update
 6. VS Code: "Run Codex in WSL" on, `CODEX_HOME` / `CODEX_SQLITE_HOME` for login shells and the
    Remote-WSL server, IPC socket folder, `chatgpt.cliExecutable`
    - **6b** starts `codex app-server` exactly the way the extension does and checks it answers
+   - **6c** runs a real tool call against a local mock model (no API cost, no account): once the
+     way GPT-6 models do it ("code mode", needs `codex-code-mode-host`) and once the way
+     DeepSeek/routed models do it (plain `exec_command`), both through the sandbox
 7. sandbox self-test of the desktop, VS Code and override Codex binaries
    - **7b** `/etc/fstab` entries that make WSL print `Processing /etc/fstab with mount -a failed`
 8. errors in the VS Code Codex log since Codex last started
@@ -86,6 +90,7 @@ Each of these was hit and fixed while building this kit:
 | Scripts can't find Node/uv when launched from Windows | `wsl.exe` starts a non-interactive shell, so `~/.bashrc` (nvm) never runs; a Windows `uv.exe` doesn't count | `env.sh` finds nvm/fnm/uv itself; the installer offers to install uv in WSL |
 | Shell commands fail with `error building bubblewrap command: mountinfo path is not absolute` | Codex bug [#46110](https://github.com/openai/codex/issues/46110) in 0.155.x (bundled with app/extension 26.917.x), triggered by running Docker containers or snapd. Fixed in Codex CLI 0.156+ | VS Code: `codex-override.sh vscode-on` sets `chatgpt.cliExecutable` to the newest stable CLI. Desktop: stop containers or wait for an app update (`check.sh` tells you when) |
 | VS Code extension reads a different config | In WSL mode the extension uses the WSL `~/.codex` unless `CODEX_HOME` is set, and Remote-WSL windows take their env from `~/.vscode-server/server-env-setup`, not `~/.profile` | `setup-vscode.sh` sets both |
+| GPT-6 models answer "the command runner fails because its code-mode host executable is missing" (DeepSeek works) | GPT-6 models use Codex "code mode" (`tool_mode = code_mode_only`), which spawns `codex-code-mode-host` from next to the Codex binary. A bare `codex` binary doesn't include it | The override installs the official full `codex-package` (`bin/codex` + `bin/codex-code-mode-host` + `codex-resources/bwrap` + `codex-path/rg`) and tests both tool styles before switching |
 | Extension loads forever after setting `chatgpt.cliExecutable` | A `\\wsl.localhost\…` path can't be started in Remote-WSL windows | A plain Linux path is used (works in both window types) |
 | Log shows `listen ENOTSUP … /.codex/ipc/ipc.sock` | `/mnt/c` can't hold Unix sockets | `codex-ipc-bind.service` bind-mounts a Linux folder over `.codex/ipc` (an `/etc/fstab` entry runs too early in WSL) |
 | Extension loads forever, log shows `failed to initialize sqlite state runtime` | Linux Codex can't open the SQLite state that the Windows runtime left in the shared home | `CODEX_SQLITE_HOME=~/.local/state/codex-sqlite` for VS Code and WSL shells |
@@ -100,7 +105,7 @@ Each of these was hit and fixed while building this kit:
 | VS Code `settings.json` | `chatgpt.runCodexInWindowsSubsystemForLinux: true`, optionally `chatgpt.cliExecutable` (backup next to it) |
 | WSL `~/.local/state/codex-router` | router API keys and merged model catalog (0600 permissions) |
 | WSL `~/.local/state/codex-sqlite` | SQLite state for VS Code / WSL-shell Codex |
-| WSL `~/.local/share/codex-override` | optional newer Codex CLI used by VS Code |
+| WSL `~/.local/share/codex-override` | optional newer official Codex package used by VS Code (`current/bin/codex`) |
 
 Notes:
 

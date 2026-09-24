@@ -9,11 +9,13 @@ set -uo pipefail
 source "$(dirname "$(readlink -f "$0")")/env.sh"
 
 OVR_DIR="$HOME/.local/share/codex-override"
-OVR_BIN="$OVR_DIR/current/codex"
+# Official full package layout: bin/codex + bin/codex-code-mode-host (needed by GPT-6 "code mode"
+# models) + codex-resources/bwrap + codex-path/rg. A bare codex binary is NOT enough.
+OVR_BIN="$OVR_DIR/current/bin/codex"
 # Plain Linux path: works both in Remote-WSL windows (extension runs on Linux and spawns it
 # as-is) and in local windows with "Run Codex in WSL" (extension passes /-paths through).
 OVR_WIN_PATH="$OVR_BIN"
-URL="https://github.com/openai/codex/releases/latest/download/codex-x86_64-unknown-linux-musl.tar.gz"
+URL="${CODEX_PACKAGE_URL:-https://github.com/openai/codex/releases/latest/download/codex-package-x86_64-unknown-linux-musl.tar.gz}"
 
 ver() { [ -x "$1" ] && "$1" --version 2>/dev/null | awk '{print $NF}'; }
 sandbox_test() { # prints ok/bug/fail
@@ -48,7 +50,7 @@ status() {
   local d v; d="${CODEX_BIN:-}"; v=$(vscode_codex_bin)
   [ -n "$d" ] && echo "   desktop bundled : $(ver "$d")  sandbox: $(sandbox_test "$d")"
   [ -n "$v" ] && echo "   vscode bundled  : $(ver "$v")  sandbox: $(sandbox_test "$v")"
-  [ -x "$OVR_BIN" ] && echo "   override (WSL)  : $(ver "$OVR_BIN")  sandbox: $(sandbox_test "$OVR_BIN")"
+  [ -x "$OVR_BIN" ] && echo "   override (WSL)  : $(ver "$OVR_BIN")  sandbox: $(sandbox_test "$OVR_BIN")  tools: $(bash "$TOOLS_DIR/scripts/tooltest.sh" "$OVR_BIN" code)"
   local cur; cur=$(settings_json_get)
   if [ -n "$cur" ]; then echo "   VS Code chatgpt.cliExecutable = $cur"; else echo "   VS Code uses its bundled Codex (no override)"; fi
   if [ -n "$cur" ] && [ -n "$v" ] && [ "$(sandbox_test "$v")" = ok ]; then
@@ -56,17 +58,28 @@ status() {
 }
 
 download() {
-  c_step "Download latest stable Codex CLI for Linux"
-  local tmp; tmp=$(mktemp -d); curl -fL --progress-bar -o "$tmp/c.tgz" "$URL" || { c_err "download failed"; rm -rf "$tmp"; return 1; }
-  tar -xzf "$tmp/c.tgz" -C "$tmp" && local b; b=$(ls "$tmp"/codex-x86_64-unknown-linux-musl 2>/dev/null)
-  [ -x "$b" ] || { c_err "unexpected archive contents"; rm -rf "$tmp"; return 1; }
-  local v; v=$(ver "$b"); mkdir -p "$OVR_DIR/$v"; mv "$b" "$OVR_DIR/$v/codex"; rm -rf "$tmp"
-  # bwrap fallback used when no system bwrap: copy the extension's bundled resources
-  local vb; vb=$(vscode_codex_bin)
-  if [ -n "$vb" ] && [ -d "$(dirname "$vb")/codex-resources" ]; then cp -r "$(dirname "$vb")/codex-resources" "$OVR_DIR/$v/"; fi
+  c_step "Download the latest stable Codex package for Linux (~140 MB)"
+  local tmp; tmp=$(mktemp -d)
+  curl -fL --progress-bar -o "$tmp/pkg.tgz" "$URL" || { c_err "download failed"; rm -rf "$tmp"; return 1; }
+  mkdir -p "$tmp/pkg" && tar -xzf "$tmp/pkg.tgz" -C "$tmp/pkg" || { c_err "couldn't extract the package"; rm -rf "$tmp"; return 1; }
+  if [ ! -x "$tmp/pkg/bin/codex" ] || [ ! -x "$tmp/pkg/bin/codex-code-mode-host" ]; then
+    c_err "unexpected package layout (bin/codex or bin/codex-code-mode-host missing)"; rm -rf "$tmp"; return 1
+  fi
+  local v; v=$(ver "$tmp/pkg/bin/codex")
+  rm -rf "${OVR_DIR:?}/$v"; mkdir -p "$OVR_DIR"; mv "$tmp/pkg" "$OVR_DIR/$v"; rm -rf "$tmp"
+  c_step "Test Codex $v before switching to it"
+  local t1 t2 t3
+  t1=$(sandbox_test "$OVR_DIR/$v/bin/codex")
+  t2=$(bash "$TOOLS_DIR/scripts/tooltest.sh" "$OVR_DIR/$v/bin/codex" code)
+  t3=$(bash "$TOOLS_DIR/scripts/tooltest.sh" "$OVR_DIR/$v/bin/codex" direct)
+  echo "   sandbox: $t1 | GPT-style (code mode) tool call: $t2 | DeepSeek-style tool call: $t3"
+  if [ "$t1" != ok ] || [ "$t2" != ok ] || [ "$t3" != ok ]; then
+    c_err "Codex $v failed a test; keeping the previous version."; return 1
+  fi
   ln -sfn "$OVR_DIR/$v" "$OVR_DIR/current"
-  c_ok "installed Codex CLI $v at $OVR_BIN"
-  local t; t=$(sandbox_test "$OVR_BIN"); [ "$t" = ok ] && c_ok "sandbox test passed" || { c_err "sandbox test: $t"; return 1; }
+  # remove older installs (including the old bare-binary layout)
+  for old in "$OVR_DIR"/*/; do old=${old%/}; [ "$old" = "$OVR_DIR/$v" ] || [ -L "$old" ] || rm -rf "$old"; done
+  c_ok "installed Codex $v at $OVR_BIN"
 }
 
 case "${1:-status}" in
@@ -74,7 +87,8 @@ case "${1:-status}" in
   get) [ -f "$VSCODE_SETTINGS" ] && settings_json_get ;;
   update) download && status ;;
   vscode-on)
-    [ -x "$OVR_BIN" ] || download || exit 1
+    # (re)install if missing, or if it is the old bare-binary layout without codex-code-mode-host
+    { [ -x "$OVR_BIN" ] && [ -x "$(dirname "$OVR_BIN")/codex-code-mode-host" ]; } || download || exit 1
     settings_json_set "$OVR_WIN_PATH"
     [ "$(settings_json_get)" = "$OVR_WIN_PATH" ] && c_ok "VS Code now uses $(ver "$OVR_BIN") ($OVR_WIN_PATH)" || { c_err "couldn't update settings.json"; exit 1; }
     echo "In VS Code: Ctrl+Shift+P -> 'Developer: Reload Window'. Undo any time: bash $0 vscode-off" ;;
