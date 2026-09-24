@@ -1,0 +1,6 @@
+# bash scripts must keep LF endings or they break inside WSL
+*.sh   text eol=lf
+*.env  text eol=lf
+*.md   text eol=lf
+# Windows batch files need CRLF
+*.cmd  text eol=crlf

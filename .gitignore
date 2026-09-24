@@ -1,0 +1,10 @@
+# local overrides (may contain your Windows path)
+config.env
+# collected diagnostics (redacted, but still personal)
+logs/
+# backups and editor/OS noise
+*.bak
+*.tmp
+*~
+.DS_Store
+Thumbs.db
